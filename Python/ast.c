@@ -1987,7 +1987,6 @@ ast_for_namedexpr(struct compiling *c, const node *n)
 
     if (!set_context(c, target, Store, n))
         return NULL;
-
     return NamedExpr(target, value, LINENO(n), n->n_col_offset, n->n_end_lineno,
                      n->n_end_col_offset, c->c_arena);
 }
@@ -2633,7 +2632,6 @@ ast_for_binop(struct compiling *c, const node *n)
        How should A op B op C by represented?
        BinOp(BinOp(A, op, B), op, C).
     */
-
     int i, nops;
     expr_ty expr1, expr2, result;
     operator_ty newoperator;
@@ -2800,7 +2798,6 @@ ast_for_atom_expr(struct compiling *c, const node *n)
 
     REQ(n, atom_expr);
     nch = NCH(n);
-
     if (TYPE(CHILD(n, 0)) == AWAIT) {
         if (c->c_feature_version < 5) {
             ast_error(c, n,
@@ -2975,17 +2972,14 @@ ast_for_expr(struct compiling *c, const node *n)
                 }
                 for (i = 1; i < NCH(n); i += 2) {
                     cmpop_ty newoperator;
-
                     newoperator = ast_for_comp_op(c, CHILD(n, i));
                     if (!newoperator) {
                         return NULL;
                     }
-
                     expression = ast_for_expr(c, CHILD(n, i + 1));
                     if (!expression) {
                         return NULL;
                     }
-
                     asdl_seq_SET(ops, i / 2, newoperator);
                     asdl_seq_SET(cmps, i / 2, expression);
                 }
@@ -2993,7 +2987,6 @@ ast_for_expr(struct compiling *c, const node *n)
                 if (!expression) {
                     return NULL;
                 }
-
                 return Compare(expression, ops, cmps, LINENO(n), n->n_col_offset,
                                n->n_end_lineno, n->n_end_col_offset, c->c_arena);
             }
@@ -4122,6 +4115,135 @@ ast_for_if_stmt(struct compiling *c, const node *n)
     return NULL;
 }
 
+// need to fix the lineno on Compare macro
+static stmt_ty
+ast_for_switch_stmt(struct compiling *c, const node *n)
+{
+    /* switch_stmt: 'switch' exprlist ':' NEWLINE INDENT ('case' exprlist ':' suite)*
+     ['otherwise' ':' suite] DEDENT
+    */
+    char *s;
+    int end_lineno, end_col_offset;
+    
+    expr_ty expression;
+    asdl_seq *suite_seq;
+    asdl_int_seq *equals = _Py_asdl_int_seq_new(Eq, c->c_arena);
+    if (!equals)
+        return NULL;
+    asdl_seq *value = _Py_asdl_seq_new(1, c->c_arena);
+    if (!value)
+        return NULL;
+
+    s = STR(CHILD(n, 5));
+    /* s[0], the first character in the string, will be
+    'o' for otherwise, or 'c' for case
+    */
+
+    // otherwise
+    if (s[0] == 'o') {  
+        asdl_seq_SET(value, 0, ast_for_expr(c, CHILD(n,1)));
+        get_last_end_pos(value, &end_lineno, &end_col_offset);
+        expression = Compare(ast_for_expr(c, CHILD(n, 1)), equals, value, LINENO(CHILD(n, 1)), CHILD(n, 1)->n_col_offset,
+                end_lineno, end_col_offset, c->c_arena);   
+        if (!expression)
+            return NULL;    
+        suite_seq = ast_for_suite(c, CHILD(n, 7));
+        if (!suite_seq)
+            return NULL;
+        get_last_end_pos(suite_seq, &end_lineno, &end_col_offset);
+        return If(expression, suite_seq, NULL, LINENO(n), n->n_col_offset,
+                end_lineno, end_col_offset, c->c_arena); 
+    }
+    // case
+    else if (s[0] == 'c') {
+        int n_cases, has_otherwise = 0;
+        asdl_seq *orelse = NULL;
+        n_cases = NCH(n) - 5;
+
+        // checks if has otherwise
+        if (TYPE(CHILD(n, (n_cases + 1))) == NAME
+            && STR(CHILD(n, (n_cases + 1)))[0] == 'o') {
+            has_otherwise = 1;
+            n_cases -= 3;
+        }
+        n_cases--;
+        n_cases /= 4;
+
+        if (has_otherwise) {
+            asdl_seq *suite_seq2;
+
+            orelse = _Py_asdl_seq_new(1, c->c_arena);
+            if (!orelse)
+            asdl_seq_SET(value, 0, ast_for_expr(c, CHILD(n, NCH(n) - 7)));
+            get_last_end_pos(value, &end_lineno, &end_col_offset);
+            expression = Compare(ast_for_expr(c, CHILD(n, 1)), equals, value,  LINENO(CHILD(n, NCH(n) - 7)),
+                           CHILD(n, NCH(n) - 7)->n_col_offset,
+                           end_lineno, end_col_offset, c->c_arena);    
+            if (!expression)
+                return NULL;
+            suite_seq = ast_for_suite(c, CHILD(n, NCH(n) - 5));
+            if (!suite_seq)
+                return NULL;
+            suite_seq2 = ast_for_suite(c, CHILD(n, NCH(n) - 2));
+            if (!suite_seq2)
+                return NULL;
+                
+            get_last_end_pos(suite_seq2, &end_lineno, &end_col_offset);
+            
+            asdl_seq_SET(orelse, 0,
+                         If(expression, suite_seq, suite_seq2,
+                            LINENO(CHILD(n, NCH(n) - 7)),
+                            CHILD(n, NCH(n) - 7)->n_col_offset,
+                            end_lineno, end_col_offset, c->c_arena));
+            /* the just-created orelse handled the last case */
+            n_cases--;
+        }
+        
+        int off = 6;
+        for (int i = 0; i < n_cases; i++) {
+            asdl_seq *newobj = _Py_asdl_seq_new(1, c->c_arena);
+            if (!newobj)
+                return NULL;
+            asdl_seq_SET(value, 0, ast_for_expr(c, CHILD(n, off)));
+            get_last_end_pos(value, &end_lineno, &end_col_offset);
+            expression = Compare(ast_for_expr(c, CHILD(n, 1)), equals, value, LINENO(CHILD(n, off - 1)),
+                           CHILD(n, off - 1)->n_col_offset,
+                           end_lineno, end_col_offset, c->c_arena);   
+            if (!expression)
+                return NULL;
+            suite_seq = ast_for_suite(c, CHILD(n, off + 2));
+            if (!suite_seq)
+                return NULL;
+
+            if (orelse != NULL) {
+                get_last_end_pos(orelse, &end_lineno, &end_col_offset);
+            } else {
+                get_last_end_pos(suite_seq, &end_lineno, &end_col_offset);
+            }
+            asdl_seq_SET(newobj, 0,
+                            If(expression, suite_seq, orelse,
+                            LINENO(CHILD(n, off - 1)),
+                            CHILD(n, off - 1)->n_col_offset,
+                            end_lineno, end_col_offset, c->c_arena));
+            orelse = newobj;
+            off += 4;
+        }
+        
+        if (!expression || !suite_seq || !end_lineno || !end_col_offset)
+            return NULL;
+        return If(expression, suite_seq, orelse,
+                  LINENO(n), n->n_col_offset,
+                  end_lineno, end_col_offset, c->c_arena);
+    }
+    else {
+        PyErr_Format(PyExc_SystemError,
+            "unexpected token in 'switch' statement: %s", s);
+        return NULL;  
+    }
+
+    return NULL;
+}
+
 static stmt_ty
 ast_for_while_stmt(struct compiling *c, const node *n)
 {
@@ -4582,6 +4704,8 @@ ast_for_stmt(struct compiling *c, const node *n)
         switch (TYPE(ch)) {
             case if_stmt:
                 return ast_for_if_stmt(c, ch);
+            case switch_stmt:
+                return ast_for_switch_stmt(c, ch);
             case while_stmt:
                 return ast_for_while_stmt(c, ch);
             case for_stmt:
