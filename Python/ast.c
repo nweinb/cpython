@@ -4115,7 +4115,7 @@ ast_for_if_stmt(struct compiling *c, const node *n)
     return NULL;
 }
 
-
+// need to fix the lineno on Compare macro
 static stmt_ty
 ast_for_switch_stmt(struct compiling *c, const node *n)
 {
@@ -4126,22 +4126,13 @@ ast_for_switch_stmt(struct compiling *c, const node *n)
     int end_lineno, end_col_offset;
     
     expr_ty expression;
-    node *compare, *equal_op, *eqequal;
-    compare = PyNode_New(comparison);
-    equal_op = PyNode_New(comp_op);
-    eqequal = PyNode_New(EQEQUAL);
-
     asdl_seq *suite_seq;
-    
-    // compare is 'expr' 'comp_op' 'expr'
-    PyNode_AddChild(compare, NULL, NULL, NULL, NULL, NULL, NULL);
-    PyNode_AddChild(compare, NULL, NULL, NULL, NULL, NULL, NULL);
-    PyNode_AddChild(compare, NULL, NULL, NULL, NULL, NULL, NULL);
-
-    PyNode_AddChild(equal_op, eqequal->n_type, eqequal->n_str, eqequal->n_lineno, eqequal->n_col_offset, eqequal->n_end_lineno, eqequal->n_end_col_offset);
-
-    compare->n_child[0] = *CHILD(n,1);
-    compare->n_child[1] = *equal_op;
+    asdl_int_seq *equals = _Py_asdl_int_seq_new(Eq, c->c_arena);
+    if (!equals)
+        return NULL;
+    asdl_seq *value = _Py_asdl_seq_new(1, c->c_arena);
+    if (!value)
+        return NULL;
 
     s = STR(CHILD(n, 5));
     /* s[0], the first character in the string, will be
@@ -4150,15 +4141,16 @@ ast_for_switch_stmt(struct compiling *c, const node *n)
 
     // otherwise
     if (s[0] == 'o') {  
-        compare->n_child[2] = *CHILD(n, 1);
-        expression = ast_for_expr(c, compare);      
+        asdl_seq_SET(value, 0, ast_for_expr(c, CHILD(n,1)));
+        get_last_end_pos(value, &end_lineno, &end_col_offset);
+        expression = Compare(ast_for_expr(c, CHILD(n, 1)), equals, value, LINENO(CHILD(n, 1)), CHILD(n, 1)->n_col_offset,
+                end_lineno, end_col_offset, c->c_arena);   
         if (!expression)
-            return NULL;
+            return NULL;    
         suite_seq = ast_for_suite(c, CHILD(n, 7));
         if (!suite_seq)
             return NULL;
         get_last_end_pos(suite_seq, &end_lineno, &end_col_offset);
-        
         return If(expression, suite_seq, NULL, LINENO(n), n->n_col_offset,
                 end_lineno, end_col_offset, c->c_arena); 
     }
@@ -4182,9 +4174,11 @@ ast_for_switch_stmt(struct compiling *c, const node *n)
 
             orelse = _Py_asdl_seq_new(1, c->c_arena);
             if (!orelse)
-                return NULL;
-            compare->n_child[2] = *CHILD(n, NCH(n) - 7);
-            expression = ast_for_expr(c, compare);
+            asdl_seq_SET(value, 0, ast_for_expr(c, CHILD(n, NCH(n) - 7)));
+            get_last_end_pos(value, &end_lineno, &end_col_offset);
+            expression = Compare(ast_for_expr(c, CHILD(n, 1)), equals, value,  LINENO(CHILD(n, NCH(n) - 7)),
+                           CHILD(n, NCH(n) - 7)->n_col_offset,
+                           end_lineno, end_col_offset, c->c_arena);    
             if (!expression)
                 return NULL;
             suite_seq = ast_for_suite(c, CHILD(n, NCH(n) - 5));
@@ -4210,8 +4204,11 @@ ast_for_switch_stmt(struct compiling *c, const node *n)
             asdl_seq *newobj = _Py_asdl_seq_new(1, c->c_arena);
             if (!newobj)
                 return NULL;
-            compare->n_child[2] = *CHILD(n,off);
-            expression = ast_for_expr(c, compare);
+            asdl_seq_SET(value, 0, ast_for_expr(c, CHILD(n, off)));
+            get_last_end_pos(value, &end_lineno, &end_col_offset);
+            expression = Compare(ast_for_expr(c, CHILD(n, 1)), equals, value, LINENO(CHILD(n, off - 1)),
+                           CHILD(n, off - 1)->n_col_offset,
+                           end_lineno, end_col_offset, c->c_arena);   
             if (!expression)
                 return NULL;
             suite_seq = ast_for_suite(c, CHILD(n, off + 2));
@@ -4224,7 +4221,7 @@ ast_for_switch_stmt(struct compiling *c, const node *n)
                 get_last_end_pos(suite_seq, &end_lineno, &end_col_offset);
             }
             asdl_seq_SET(newobj, 0,
-                         If(expression, suite_seq, orelse,
+                            If(expression, suite_seq, orelse,
                             LINENO(CHILD(n, off - 1)),
                             CHILD(n, off - 1)->n_col_offset,
                             end_lineno, end_col_offset, c->c_arena));
